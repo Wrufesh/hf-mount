@@ -516,9 +516,9 @@ dependencies = [
 
 [[package]]
 name = "ctor"
-version = "1.0.4"
+version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2049d5ec0c16ffe3815be58fe6966159a0f37dcf16ae1c7330808ed7c9b71a1"
+checksum = "6d765eb1c0bda10d31e0ea185f5ee15da532d60b0912d2bd1441783439e749c5"
 dependencies = [
  "link-section",
  "linktime-proc-macro",
@@ -950,6 +950,7 @@ name = "hf-mount"
 version = "0.6.0"
 dependencies = [
  "async-trait",
+ "base64",
  "bytes",
  "cap-std",
  "chrono",
@@ -1408,9 +1409,9 @@ dependencies = [
 
 [[package]]
 name = "link-section"
-version = "0.16.0"
+version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e19299f36b28d94bcf0d8b913305e2b79bd5cb53f981e3855968abfd177379cd"
+checksum = "4d1e908a416d6e9f725743b84a36feea40c4c131e805fbc26d61f9f451f36080"
 
 [[package]]
 name = "linktime-proc-macro"
@@ -3751,7 +3752,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 [[package]]
 name = "xet-client"
 version = "1.5.2"
-source = "git+https://github.com/huggingface/xet-core.git?branch=main#feb8ddb6fd47233d513102880b98551bba7c5f6b"
+source = "git+https://github.com/huggingface/xet-core.git?branch=main#6f0cf38065004950040d0a811f8684c93160a551"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3788,7 +3789,7 @@ dependencies = [
 [[package]]
 name = "xet-core-structures"
 version = "1.5.2"
-source = "git+https://github.com/huggingface/xet-core.git?branch=main#feb8ddb6fd47233d513102880b98551bba7c5f6b"
+source = "git+https://github.com/huggingface/xet-core.git?branch=main#6f0cf38065004950040d0a811f8684c93160a551"
 dependencies = [
  "async-trait",
  "base64",
@@ -3824,7 +3825,7 @@ dependencies = [
 [[package]]
 name = "xet-data"
 version = "1.5.2"
-source = "git+https://github.com/huggingface/xet-core.git?branch=main#feb8ddb6fd47233d513102880b98551bba7c5f6b"
+source = "git+https://github.com/huggingface/xet-core.git?branch=main#6f0cf38065004950040d0a811f8684c93160a551"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3856,7 +3857,7 @@ dependencies = [
 [[package]]
 name = "xet-runtime"
 version = "1.5.2"
-source = "git+https://github.com/huggingface/xet-core.git?branch=main#feb8ddb6fd47233d513102880b98551bba7c5f6b"
+source = "git+https://github.com/huggingface/xet-core.git?branch=main#6f0cf38065004950040d0a811f8684c93160a551"
 dependencies = [
  "anyhow",
  "async-trait",
