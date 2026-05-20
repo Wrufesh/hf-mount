@@ -5,6 +5,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use tokio::sync::RwLock;
+use tokio::io::AsyncWriteExt;
 use xet_client::cas_client::auth::{TokenRefresher, TokenInfo, AuthError};
 
 use crate::error::{Result, Error};
@@ -27,8 +28,9 @@ pub struct AccHubClient {
     project_slug: String,
 }
 
-fn parse_token_from_file(path: &Path) -> Result<String> {
-    let content = std::fs::read_to_string(path)
+async fn parse_token_from_file(path: &Path) -> Result<String> {
+    let content = tokio::fs::read_to_string(path)
+        .await
         .map_err(|e| Error::Xet(format!("Failed to read token file {:?}: {}", path, e)))?;
     let trimmed = content.trim();
     if trimmed.starts_with('{') {
@@ -68,21 +70,23 @@ fn find_json_key(val: &serde_json::Value, key_to_find: &str) -> Option<String> {
     }
 }
 
-fn write_token_to_file(path: &Path, new_token: &str) -> Result<()> {
-    let content = std::fs::read_to_string(path).unwrap_or_default();
+async fn write_token_to_file(path: &Path, new_token: &str) -> Result<()> {
+    let content = tokio::fs::read_to_string(path).await.unwrap_or_default();
     let trimmed = content.trim();
     if trimmed.starts_with('{') {
         if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(trimmed) {
             if update_json_key(&mut val, "token", new_token) {
                 let serialized = serde_json::to_string_pretty(&val)
                     .map_err(|e| Error::Xet(format!("Failed to serialize token JSON: {}", e)))?;
-                std::fs::write(path, serialized)
+                tokio::fs::write(path, serialized)
+                    .await
                     .map_err(|e| Error::Xet(format!("Failed to write token JSON to disk: {}", e)))?;
                 return Ok(());
             }
         }
     }
-    std::fs::write(path, new_token)
+    tokio::fs::write(path, new_token)
+        .await
         .map_err(|e| Error::Xet(format!("Failed to write plain token to disk: {}", e)))?;
     Ok(())
 }
@@ -133,12 +137,19 @@ impl AccHubClient {
         let final_endpoint = std::env::var("ACC_ENDPOINT")
             .unwrap_or_else(|_| hub_endpoint.trim_end_matches('/').to_string());
         
-        let initial_token = std::env::var("ACC_TOKEN")
-            .ok()
-            .or_else(|| token.map(|t| t.to_string()))
-            .or_else(|| {
-                token_file.and_then(|p| parse_token_from_file(p).ok())
-            });
+        let initial_token = match std::env::var("ACC_TOKEN").ok() {
+            Some(t) => Some(t),
+            None => match token {
+                Some(t) => Some(t.to_string()),
+                None => {
+                    if let Some(p) = token_file {
+                        parse_token_from_file(p).await.ok()
+                    } else {
+                        None
+                    }
+                }
+            }
+        };
 
         let cas_token = initial_token.clone().map(|t| {
             format!("xet_session_prj_{}_{}", project_slug, t)
@@ -193,7 +204,7 @@ impl AccHubClient {
         }
 
         let token_from_disk = if let Some(ref path) = self.token_file {
-            parse_token_from_file(path).ok()
+            parse_token_from_file(path).await.ok()
         } else {
             None
         };
@@ -256,7 +267,7 @@ impl AccHubClient {
                 .map_err(|e| Error::Xet(format!("Failed to parse refresh JSON: {e}")))?;
 
             if let Some(ref path) = self.token_file {
-                if let Err(e) = write_token_to_file(path, &body.refresh_token) {
+                if let Err(e) = write_token_to_file(path, &body.refresh_token).await {
                     tracing::error!("Failed to write rotated token to disk: {:?}", e);
                 }
             }
@@ -582,13 +593,12 @@ impl HubOps for AccHubClient {
             return Err(Error::Xet(format!("Download request failed: {}", file_resp.status())));
         }
 
-        let mut file = std::fs::File::create(dest).map_err(Error::Io)?;
+        let mut file = tokio::fs::File::create(dest).await.map_err(Error::Io)?;
         let mut stream = file_resp.bytes_stream();
         use futures::StreamExt;
-        use std::io::Write;
         while let Some(chunk_result) = stream.next().await {
             let chunk = chunk_result.map_err(|e| Error::Xet(format!("Stream chunk error: {e}")))?;
-            file.write_all(&chunk).map_err(|e| Error::Io(e))?;
+            file.write_all(&chunk).await.map_err(|e| Error::Io(e))?;
         }
 
         Ok(())
