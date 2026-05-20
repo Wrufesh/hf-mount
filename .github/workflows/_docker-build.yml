@@ -23,7 +23,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/huggingface/hf-mount-fuse
+  IMAGE: ghcr.io/wrufesh/hf-mount-fuse
 
 jobs:
   amd64:

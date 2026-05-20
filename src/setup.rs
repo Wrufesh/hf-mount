@@ -11,7 +11,8 @@ use xet_runtime::core::XetContext;
 
 use crate::cached_xet_client::CachedXetClient;
 use crate::file_cache::FileCache;
-use crate::hub_api::{HubApiClient, HubTokenRefresher, SourceKind, parse_repo_id, split_path_prefix};
+use crate::hub_api::{HubApiClient, HubOps, HubTokenRefresher, SourceKind, parse_repo_id, split_path_prefix};
+use crate::overlay::OverlayBacking;
 use crate::virtual_fs::{VfsConfig, VirtualFs};
 use crate::xet::{StagingDir, XetSessions};
 
@@ -107,6 +108,15 @@ pub struct MountOptions {
     #[arg(long, default_value_t = 30)]
     pub poll_interval_secs: u64,
 
+    /// Maximum number of concurrent tree-listing requests per poll round.
+    /// Each loaded directory prefix issues one Hub API request; this cap
+    /// prevents thundering-herd bursts on large mounts (e.g. transformers/docs)
+    /// and is the main knob to throttle hf-mount's load on the Hub `/api`
+    /// endpoint. Lower it in shared environments (e.g. Spaces) where many
+    /// mounts poll in parallel.
+    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u32).range(1..))]
+    pub poll_listing_concurrency: u32,
+
     /// Maximum size in bytes for the on-disk chunk cache.
     #[arg(long, default_value_t = 10_000_000_000)]
     pub cache_size: u64,
@@ -187,6 +197,15 @@ pub struct MountOptions {
     /// when `--inode-soft-limit > 0`.
     #[arg(long, default_value_t = 5_000)]
     pub lru_sweep_interval_ms: u64,
+
+    /// Enable overlay mode. The mount point directory serves as the local
+    /// layer: pre-existing local files are visible through the mount, except
+    /// symlinks, which are skipped/hidden. New writes persist there in their
+    /// original path layout. Reads merge local files with remote bucket or
+    /// repo contents (local takes precedence). Implies --advanced-writes.
+    /// Writes are never pushed to remote.
+    #[arg(long, default_value_t = false)]
+    pub overlay: bool,
 }
 
 /// CLI args for the foreground FUSE/NFS binaries.
@@ -325,36 +344,76 @@ pub fn build_with_runtime(
     };
 
     let backend = if is_nfs { "nfs" } else { "fuse" };
-    let hub_client = runtime.block_on(async {
-        HubApiClient::from_source(
-            &options.hub_endpoint,
-            options.hf_token.as_deref(),
-            options.token_file.clone(),
-            source_kind,
-            path_prefix,
-            backend,
-        )
-        .await
-        .unwrap_or_else(|e| panic!("Failed to initialize Hub client: {e}"))
-    });
+    let is_accelerator = std::env::var("ACCELERATOR_MOUNT").is_ok();
+
+    let standard_client = if !is_accelerator {
+        Some(runtime.block_on(async {
+            HubApiClient::from_source(
+                &options.hub_endpoint,
+                options.hf_token.as_deref(),
+                options.token_file.clone(),
+                source_kind.clone(),
+                path_prefix.clone(),
+                backend,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Failed to initialize Hub client: {e}"))
+        }))
+    } else {
+        None
+    };
+
+    let mut acc_client: Option<Arc<crate::acc_mount::AccHubClient>> = None;
+    let hub_ops_client: Arc<dyn HubOps> = if is_accelerator {
+        let client = Arc::new(runtime.block_on(async {
+            crate::acc_mount::AccHubClient::new(
+                &options.hub_endpoint,
+                options.hf_token.as_deref(),
+                options.token_file.as_deref(),
+                source_kind.clone(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("Failed to initialize Accelerator client: {e}"))
+        }));
+        acc_client = Some(client.clone());
+        client
+    } else {
+        standard_client.clone().expect("Standard client should be initialized")
+    };
 
     // Validate that the subfolder exists on the remote.
-    if !hub_client.path_prefix().is_empty() {
+    if !is_accelerator && !standard_client.as_ref().unwrap().path_prefix().is_empty() {
         runtime.block_on(async {
-            hub_client.validate_path_prefix().await.unwrap_or_else(|e| {
+            standard_client.as_ref().unwrap().validate_path_prefix().await.unwrap_or_else(|e| {
                 panic!("{e}");
             });
         });
     }
 
-    let read_only = options.read_only || hub_client.is_repo();
-    if hub_client.is_repo() && !options.read_only {
+    if options.overlay && options.read_only {
+        panic!(
+            "--overlay with --read-only is pointless: overlay enables local writes, --read-only disables them. Use --read-only alone instead."
+        );
+    }
+
+    let read_only = (options.read_only || hub_ops_client.is_repo()) && !options.overlay;
+    if hub_ops_client.is_repo() && !options.read_only && !options.overlay {
         info!("Repo mounts are always read-only");
     }
 
-    let refresher = hub_client.token_refresher(read_only);
+    // Overlay: local writes allowed, but no remote write token/upload.
+    let remote_read_only = read_only || options.overlay;
+    
     let xet_ctx = XetContext::default().expect("Failed to create XetContext");
-    let cas_config = build_cas_config(&xet_ctx, &runtime, &refresher);
+    let cas_config = if is_accelerator {
+        let acc_ref = Arc::new(crate::acc_mount::AccTokenRefresher::new(
+            acc_client.expect("Accelerator client should be initialized"),
+        ));
+        build_cas_config(&xet_ctx, &runtime, None, Some(acc_ref))
+    } else {
+        let refresher = standard_client.as_ref().unwrap().token_refresher(remote_read_only);
+        build_cas_config(&xet_ctx, &runtime, Some(&refresher), None)
+    };
 
     // Ensure cache directory exists and is writable (needed for staging even without chunk cache).
     std::fs::create_dir_all(&options.cache_dir)
@@ -397,13 +456,30 @@ pub fn build_with_runtime(
         .expect("Failed to create storage client");
     let cached_client = CachedXetClient::new(raw_client);
     let download_session = FileDownloadSession::from_client(&xet_ctx, cached_client.clone(), xorb_cache.clone());
-    let upload_config = if read_only { None } else { Some(cas_config) };
+    let upload_config = if remote_read_only { None } else { Some(cas_config) };
     let xet_sessions = XetSessions::new(xet_ctx, download_session, upload_config, cached_client, xorb_cache);
 
-    let advanced_writes = options.advanced_writes || (is_nfs && !read_only);
+    let advanced_writes = options.advanced_writes || options.overlay || (is_nfs && !read_only);
+
+    // Overlay: open a pre-mount fd to the mount point directory. The fd is
+    // held by OverlayBacking so overlay-local filesystem ops can stay rooted
+    // at the covered directory after mount.
+    let overlay_fd = if options.overlay {
+        std::fs::create_dir_all(&mount_point)
+            .unwrap_or_else(|e| panic!("Failed to create mount point {:?} for overlay: {e}", mount_point));
+        Some(
+            std::fs::File::open(&mount_point)
+                .unwrap_or_else(|e| panic!("Failed to open mount point {:?} for overlay: {e}", mount_point)),
+        )
+    } else {
+        None
+    };
+
+    let overlay_backing = overlay_fd.map(OverlayBacking::new);
+
     // Repos need a staging dir for HTTP download cache (open_readonly),
     // even when advanced_writes is disabled.
-    let staging_dir = if advanced_writes || hub_client.is_repo() {
+    let staging_dir = if advanced_writes || hub_ops_client.is_repo() {
         Some(StagingDir::new(&options.cache_dir, options.max_staging_size))
     } else {
         None
@@ -425,26 +501,38 @@ pub fn build_with_runtime(
     }
 
     let backend_name = if is_nfs { "nfs" } else { "fuse" };
-    let subfolder_info = if hub_client.path_prefix().is_empty() {
+    let path_prefix = standard_client.as_ref().map(|c| c.path_prefix()).unwrap_or("");
+    let subfolder_info = if path_prefix.is_empty() {
         String::new()
     } else {
-        format!(" (subfolder: {})", hub_client.path_prefix())
+        format!(" (subfolder: {})", path_prefix)
+    };
+    let access_mode = if options.overlay {
+        "overlay: remote read-only, local writes enabled"
+    } else if read_only {
+        "read-only"
+    } else {
+        "read-write"
     };
     info!(
         "Mounting {}{} at {:?} ({}, backend={})",
-        hub_client.source(),
+        hub_ops_client.source(),
         subfolder_info,
         mount_point,
-        if read_only { "read-only" } else { "read-write" },
+        access_mode,
         backend_name,
     );
     info!(
-        "Config: advanced_writes={} direct_io={} poll_interval={}s metadata_ttl={}ms \
+        "Config: advanced_writes={} overlay={} remote_read_only={} direct_io={} poll_interval={}s \
+         poll_listing_concurrency={} metadata_ttl={}ms \
          cache_dir={:?} cache_size={} no_disk_cache={} cache_mode={:?} max_staging_size={} max_threads={} \
          flush_debounce={}ms flush_max_batch={}ms uid={} gid={} filter_os_files={}",
         advanced_writes,
+        options.overlay,
+        remote_read_only,
         options.direct_io,
         options.poll_interval_secs,
+        options.poll_listing_concurrency,
         options.metadata_ttl_ms,
         options.cache_dir,
         options.cache_size,
@@ -463,16 +551,18 @@ pub fn build_with_runtime(
 
     let virtual_fs = VirtualFs::new(
         runtime.clone(),
-        hub_client,
+        hub_ops_client,
         xet_sessions,
         staging_dir,
         file_cache,
+        overlay_backing,
         VfsConfig {
             read_only,
             advanced_writes,
             uid,
             gid,
             poll_interval_secs: options.poll_interval_secs,
+            poll_listing_concurrency: options.poll_listing_concurrency as usize,
             metadata_ttl,
             serve_lookup_from_cache: !options.metadata_ttl_minimal,
             filter_os_files: !options.no_filter_os_files,
@@ -561,8 +651,26 @@ fn default_gid() -> u32 {
 fn build_cas_config(
     ctx: &XetContext,
     runtime: &tokio::runtime::Handle,
-    refresher: &Arc<HubTokenRefresher>,
+    standard_refresher: Option<&Arc<HubTokenRefresher>>,
+    acc_refresher: Option<Arc<dyn xet_client::cas_client::auth::TokenRefresher>>,
 ) -> Arc<TranslatorConfig> {
+    if std::env::var("ACCELERATOR_MOUNT").is_ok() {
+        let cas_url = std::env::var("ACC_CAS_ENDPOINT")
+            .unwrap_or_else(|_| "http://localhost:8000/api/xet-cas".to_string());
+        info!("Accelerator Mount Active: Using CAS endpoint={}", cas_url);
+        return Arc::new(
+            default_config(
+                ctx,
+                cas_url,
+                None,
+                acc_refresher,
+                None,
+            )
+            .unwrap_or_else(|e| panic!("Failed to build TranslatorConfig: {e}")),
+        );
+    }
+
+    let refresher = standard_refresher.expect("Standard client needs a standard token refresher");
     let jwt = runtime
         .block_on(refresher.fetch_initial())
         .unwrap_or_else(|e| panic!("Failed to get storage token: {e}"));
