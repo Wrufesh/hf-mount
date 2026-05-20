@@ -422,25 +422,7 @@ pub fn mount_bucket_nfs(bucket_id: &str, mount_point: &str, cache_dir: &str, ext
     mount_nfs("bucket", bucket_id, mount_point, cache_dir, extra_args)
 }
 
-<<<<<<< HEAD
     let binary = nfs_binary_path();
-=======
-/// Spawn hf-mount-nfs to mount a repo.
-pub fn mount_repo_nfs(repo_id: &str, mount_point: &str, cache_dir: &str, extra_args: &[&str]) -> Child {
-    mount_nfs("repo", repo_id, mount_point, cache_dir, extra_args)
-}
-
-fn mount_nfs(source_kind: &str, source_id: &str, mount_point: &str, cache_dir: &str, extra_args: &[&str]) -> Child {
-    let token = std::env::var("HF_TOKEN").ok();
-    let binary = std::env::current_exe()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("hf-mount-nfs");
-
->>>>>>> acc-mount
     eprintln!("Mounting NFS with binary: {:?}", binary);
 
     if !binary.exists() {
@@ -475,17 +457,12 @@ fn mount_nfs(source_kind: &str, source_id: &str, mount_point: &str, cache_dir: &
         .spawn()
         .expect("Failed to spawn hf-mount-nfs");
 
-<<<<<<< HEAD
     for i in 0..30 {
         std::thread::sleep(Duration::from_millis(500));
         if nfs_is_mounted(mount_point) {
             eprintln!("Mount ready after {}ms", (i + 1) * 500);
             return child;
         }
-=======
-    if wait_for_mount(mount_point) {
-        return child;
->>>>>>> acc-mount
     }
 
     eprintln!("Warning: mount may not be ready after 15s");
