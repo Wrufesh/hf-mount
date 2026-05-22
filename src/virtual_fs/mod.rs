@@ -2572,6 +2572,11 @@ impl VirtualFs {
             .unwrap_or_default()
             .as_millis() as u64;
 
+        let file_size = file_info.file_size().expect("upload returned XetFileInfo without size");
+        if std::env::var("ACCELERATOR_MOUNT").is_ok() {
+            crate::acc_mount::client::record_uploaded_info(file_info.hash().to_string(), file_size, None);
+        }
+
         let mut ops: Vec<BatchOp> = vec![BatchOp::AddFile {
             path: full_path.clone(),
             xet_hash: file_info.hash().to_string(),
