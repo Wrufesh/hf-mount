@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock, Mutex};
+use std::collections::HashMap;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
@@ -10,6 +11,28 @@ use xet_client::cas_client::auth::{TokenRefresher, TokenInfo, AuthError};
 
 use crate::error::{Result, Error};
 use crate::hub_api::{HubOps, TreeEntry, HeadFileInfo, BatchOp, SourceKind};
+
+#[derive(Clone, Debug)]
+pub struct UploadedFileInfo {
+    pub size: u64,
+    pub sha256: Option<String>,
+}
+
+pub static UPLOADED_FILE_INFOS: OnceLock<Mutex<HashMap<String, UploadedFileInfo>>> = OnceLock::new();
+
+pub fn record_uploaded_info(hash: String, size: u64, sha256: Option<String>) {
+    UPLOADED_FILE_INFOS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .insert(hash, UploadedFileInfo { size, sha256 });
+}
+
+pub fn get_uploaded_info(hash: &str) -> Option<UploadedFileInfo> {
+    UPLOADED_FILE_INFOS
+        .get()
+        .and_then(|m| m.lock().unwrap().get(hash).cloned())
+}
 
 #[derive(Clone, Debug)]
 pub struct TokenState {
@@ -479,46 +502,16 @@ impl HubOps for AccHubClient {
 
         for op in ops {
             if let BatchOp::AddFile { path, xet_hash, content_type, .. } = op {
-                // Query the total file size from the reconstruction endpoint
-                let recon_url = format!(
-                    "{}/api/xet-cas/v1/reconstructions/{}",
-                    self.hub_endpoint, xet_hash
-                );
+                let cached_info = get_uploaded_info(xet_hash).ok_or_else(|| {
+                    Error::Xet(format!(
+                        "Cache miss for xet_hash={}. Size and SHA256 must be cached before registration.",
+                        xet_hash
+                    ))
+                })?;
 
-                let token_info = self.get_or_refresh_token().await?;
-                let mut req = self.client.get(&recon_url);
-                if let Some(ref t) = token_info.cas_token {
-                    req = req.bearer_auth(t).header("x-authorization", t);
-                }
-
-                let mut file_size = 0u64;
-                match req.send().await {
-                    Ok(resp) if resp.status().is_success() => {
-                        #[derive(Deserialize)]
-                        struct Term {
-                            unpacked_length: u64,
-                        }
-                        #[derive(Deserialize)]
-                        struct ReconstructionResponse {
-                            terms: Vec<Term>,
-                        }
-
-                        if let Ok(recon) = resp.json::<ReconstructionResponse>().await {
-                            file_size = recon.terms.iter().map(|t| t.unpacked_length).sum();
-                            tracing::debug!("Resolved size for xet_hash={}: {} bytes", xet_hash, file_size);
-                        } else {
-                            tracing::warn!("Failed to parse reconstruction JSON for xet_hash={}", xet_hash);
-                        }
-                    }
-                    Ok(resp) => {
-                        let status = resp.status();
-                        let text = resp.text().await.unwrap_or_default();
-                        tracing::warn!("Reconstruction API returned status={} body={}", status, text);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Reconstruction request failed: {:?}", e);
-                    }
-                }
+                let file_size = cached_info.size;
+                let sha256_val = cached_info.sha256.clone().unwrap_or_else(|| xet_hash.clone());
+                tracing::debug!("Resolved size from cache for xet_hash={}: {} bytes, sha256={}", xet_hash, file_size, sha256_val);
 
                 let absolute_filename = if path.starts_with('/') {
                     format!("{}{}", self.project_slug, path)
@@ -529,7 +522,7 @@ impl HubOps for AccHubClient {
                 items.push(XetObjectRegistrationItem {
                     filename: absolute_filename,
                     merkle_hash: xet_hash.clone(),
-                    sha256: xet_hash.clone(), // Map merkle_hash to sha256
+                    sha256: sha256_val,
                     file_size: file_size,
                     content_type: content_type.clone(),
                 });
