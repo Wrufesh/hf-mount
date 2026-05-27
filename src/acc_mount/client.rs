@@ -378,6 +378,7 @@ impl HubOps for AccHubClient {
         struct BackendObject {
             filename: String,
             created_at: String,
+            file_size: Option<u64>,
         }
         #[derive(Deserialize)]
         struct NodeItemsResponse {
@@ -420,7 +421,7 @@ impl HubOps for AccHubClient {
             entries.push(TreeEntry {
                 path: relative_path,
                 entry_type: "file".to_string(),
-                size: None, // Resolved lazily via head_file
+                size: obj.file_size,
                 xet_hash: None, // Resolved lazily via head_file
                 oid: None,
                 mtime: Some(obj.created_at),
