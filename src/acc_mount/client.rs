@@ -499,57 +499,91 @@ impl HubOps for AccHubClient {
             items: Vec<XetObjectRegistrationItem>,
         }
 
+        #[derive(Serialize)]
+        struct XetBulkDeleteModel {
+            filenames: Vec<String>,
+        }
+
         let mut items = Vec::new();
+        let mut delete_filenames = Vec::new();
 
         for op in ops {
-            if let BatchOp::AddFile { path, xet_hash, content_type, .. } = op {
-                let cached_info = get_uploaded_info(xet_hash).ok_or_else(|| {
-                    Error::Xet(format!(
-                        "Cache miss for xet_hash={}. Size and SHA256 must be cached before registration.",
-                        xet_hash
-                    ))
-                })?;
+            match op {
+                BatchOp::AddFile { path, xet_hash, content_type, .. } => {
+                    let cached_info = get_uploaded_info(xet_hash).ok_or_else(|| {
+                        Error::Xet(format!(
+                            "Cache miss for xet_hash={}. Size and SHA256 must be cached before registration.",
+                            xet_hash
+                        ))
+                    })?;
 
-                let file_size = cached_info.size;
-                let sha256_val = cached_info.sha256.clone().unwrap_or_else(|| xet_hash.clone());
-                tracing::debug!("Resolved size from cache for xet_hash={}: {} bytes, sha256={}", xet_hash, file_size, sha256_val);
+                    let file_size = cached_info.size;
+                    let sha256_val = cached_info.sha256.clone().unwrap_or_else(|| xet_hash.clone());
+                    tracing::debug!("Resolved size from cache for xet_hash={}: {} bytes, sha256={}", xet_hash, file_size, sha256_val);
 
-                let absolute_filename = if path.starts_with('/') {
-                    format!("{}{}", self.project_slug, path)
-                } else {
-                    format!("{}/{}", self.project_slug, path)
-                };
+                    let absolute_filename = if path.starts_with('/') {
+                        format!("{}{}", self.project_slug, path)
+                    } else {
+                        format!("{}/{}", self.project_slug, path)
+                    };
 
-                items.push(XetObjectRegistrationItem {
-                    filename: absolute_filename,
-                    merkle_hash: xet_hash.clone(),
-                    sha256: sha256_val,
-                    file_size: file_size,
-                    content_type: content_type.clone(),
-                });
+                    items.push(XetObjectRegistrationItem {
+                        filename: absolute_filename,
+                        merkle_hash: xet_hash.clone(),
+                        sha256: sha256_val,
+                        file_size: file_size,
+                        content_type: content_type.clone(),
+                    });
+                }
+                BatchOp::DeleteFile { path } => {
+                    let absolute_filename = if path.starts_with('/') {
+                        format!("{}{}", self.project_slug, path)
+                    } else {
+                        format!("{}/{}", self.project_slug, path)
+                    };
+                    delete_filenames.push(absolute_filename);
+                }
             }
         }
 
-        if items.is_empty() {
-            return Ok(());
+        if !items.is_empty() {
+            let url = format!(
+                "{}/api/xet-cas/v1/cas/bulk-register",
+                self.hub_endpoint
+            );
+
+            let token_info = self.get_or_refresh_token().await?;
+            let mut req = self.client.post(&url).json(&XetBulkRegistrationModel { items });
+            if let Some(ref t) = token_info.cas_token {
+                req = req.bearer_auth(t).header("x-authorization", t);
+            }
+
+            let resp = req.send().await.map_err(|e| Error::Xet(format!("Bulk register failed: {e}")))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(Error::Xet(format!("Bulk register failed ({}): {}", status, text)));
+            }
         }
 
-        let url = format!(
-            "{}/api/xet-cas/v1/cas/bulk-register",
-            self.hub_endpoint
-        );
+        if !delete_filenames.is_empty() {
+            let url = format!(
+                "{}/api/xet-cas/v1/cas/bulk-delete",
+                self.hub_endpoint
+            );
 
-        let token_info = self.get_or_refresh_token().await?;
-        let mut req = self.client.post(&url).json(&XetBulkRegistrationModel { items });
-        if let Some(ref t) = token_info.cas_token {
-            req = req.bearer_auth(t).header("x-authorization", t);
-        }
+            let token_info = self.get_or_refresh_token().await?;
+            let mut req = self.client.post(&url).json(&XetBulkDeleteModel { filenames: delete_filenames });
+            if let Some(ref t) = token_info.cas_token {
+                req = req.bearer_auth(t).header("x-authorization", t);
+            }
 
-        let resp = req.send().await.map_err(|e| Error::Xet(format!("Bulk register failed: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Xet(format!("Bulk register failed ({}): {}", status, text)));
+            let resp = req.send().await.map_err(|e| Error::Xet(format!("Bulk delete failed: {e}")))?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(Error::Xet(format!("Bulk delete failed ({}): {}", status, text)));
+            }
         }
 
         Ok(())
