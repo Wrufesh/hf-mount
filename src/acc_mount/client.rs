@@ -546,6 +546,11 @@ impl HubOps for AccHubClient {
             }
         }
 
+        // Deduplicate: do not delete files that are being added in the same batch.
+        // This handles cases like atomic rename where a file is registered and then
+        // its previous instance is queued for deletion.
+        delete_filenames.retain(|d| !items.iter().any(|i| i.filename == *d));
+
         if !items.is_empty() {
             let url = format!(
                 "{}/api/xet-cas/v1/cas/bulk-register",
