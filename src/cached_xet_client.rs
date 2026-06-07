@@ -7,7 +7,8 @@ use xet_client::ClientError;
 use xet_client::cas_client::adaptive_concurrency::ConnectionPermit;
 use xet_client::cas_client::{Client, ProgressCallback, URLProvider};
 use xet_client::cas_types::{
-    BatchQueryReconstructionResponse, FileRange, HexMerkleHash, QueryReconstructionResponseV2, XorbReconstructionTerm,
+    BatchQueryReconstructionResponse, FileChunkHashesResponse, FileRange, HexMerkleHash, QueryReconstructionResponseV2,
+    XorbReconstructionTerm,
 };
 use xet_core_structures::merklehash::MerkleHash;
 use xet_core_structures::metadata_shard::file_structs::MDBFileInfo;
@@ -24,15 +25,22 @@ const MAX_CACHE_ENTRIES: usize = 4096;
 const CACHE_TTL: Duration = Duration::from_secs(59 * 60);
 
 struct CacheEntry {
-    response: QueryReconstructionResponseV2,
+    response: Arc<QueryReconstructionResponseV2>,
+    /// When the CAS response was received. Used for TTL (presigned URLs in
+    /// `terms` expire ~1h after the server issued them). Not updated on hit.
     inserted_at: Instant,
+    /// Bumped on every cache hit. Used to pick the eviction victim under
+    /// overflow — keeps hot entries warm even if they were inserted long ago.
+    last_accessed: Instant,
 }
 
 impl CacheEntry {
-    fn new(response: QueryReconstructionResponseV2) -> Self {
+    fn new(response: Arc<QueryReconstructionResponseV2>) -> Self {
+        let now = Instant::now();
         Self {
             response,
-            inserted_at: Instant::now(),
+            inserted_at: now,
+            last_accessed: now,
         }
     }
 
@@ -156,22 +164,28 @@ impl Client for CachedXetClient {
             // at chunk granularity) than what derive_range_response produces from the
             // full plan, so prefer it when available.
             enum CacheResult {
-                ExactHit(QueryReconstructionResponseV2),
-                FullPlan(QueryReconstructionResponseV2, FileRange),
+                ExactHit(Arc<QueryReconstructionResponseV2>),
+                FullPlan(Arc<QueryReconstructionResponseV2>, FileRange),
                 Miss,
             }
 
             let cached = {
                 let mut cache = self.cache.lock().expect("cache poisoned");
 
-                let try_get = |cache: &mut HashMap<ReconCacheKey, CacheEntry>, key: ReconCacheKey| match cache.get(&key)
-                {
-                    Some(entry) if entry.is_valid(self.ttl) => Some(entry.response.clone()),
-                    Some(_) => {
-                        cache.remove(&key);
-                        None
+                let try_get = |cache: &mut HashMap<ReconCacheKey, CacheEntry>,
+                               key: ReconCacheKey|
+                 -> Option<Arc<QueryReconstructionResponseV2>> {
+                    match cache.get_mut(&key) {
+                        Some(entry) if entry.is_valid(self.ttl) => {
+                            entry.last_accessed = Instant::now();
+                            Some(entry.response.clone())
+                        }
+                        Some(_) => {
+                            cache.remove(&key);
+                            None
+                        }
+                        None => None,
                     }
-                    None => None,
                 };
 
                 if let Some(resp) = try_get(&mut cache, key) {
@@ -194,7 +208,7 @@ impl Client for CachedXetClient {
                         bytes_range,
                         resp.terms.len()
                     );
-                    return Ok(Some(resp));
+                    return Ok(Some((*resp).clone()));
                 }
                 CacheResult::FullPlan(full, range) => {
                     let resp = derive_range_response(&full, range);
@@ -252,15 +266,18 @@ impl Client for CachedXetClient {
                             // First pass: evict range entries (less valuable than full plans).
                             cache.retain(|(_hash, range), _| range.is_none());
                             if cache.len() >= MAX_CACHE_ENTRIES {
-                                // Still full (all full plans). Evict one arbitrary entry
-                                // to make room — never skip the insert, as single-flight
-                                // waiters expect the result to be in cache.
-                                if let Some(victim) = cache.keys().next().copied() {
+                                // Still full (all full plans). Evict the LRU victim — keeps
+                                // hot plans warm even if they were inserted long ago.
+                                let victim = cache
+                                    .iter()
+                                    .min_by_key(|(_, entry)| entry.last_accessed)
+                                    .map(|(k, _)| *k);
+                                if let Some(victim) = victim {
                                     cache.remove(&victim);
                                 }
                             }
                         }
-                        cache.insert(key, CacheEntry::new(response.clone()));
+                        cache.insert(key, CacheEntry::new(Arc::new(response.clone())));
                     }
 
                     // Notify waiters and clean up.
@@ -278,6 +295,14 @@ impl Client for CachedXetClient {
         file_hash: &MerkleHash,
     ) -> Result<Option<(MDBFileInfo, Option<MerkleHash>)>> {
         self.inner.get_file_reconstruction_info(file_hash).await
+    }
+
+    async fn get_file_chunk_hashes(
+        &self,
+        file_id: &MerkleHash,
+        dirty_ranges: Vec<FileRange>,
+    ) -> Result<FileChunkHashesResponse> {
+        self.inner.get_file_chunk_hashes(file_id, dirty_ranges).await
     }
 
     async fn batch_get_reconstruction(&self, file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
@@ -421,6 +446,14 @@ mod tests {
             unimplemented!("not needed in these tests")
         }
 
+        async fn get_file_chunk_hashes(
+            &self,
+            _file_id: &MerkleHash,
+            _dirty_ranges: Vec<FileRange>,
+        ) -> Result<FileChunkHashesResponse> {
+            unimplemented!("not needed in these tests")
+        }
+
         async fn batch_get_reconstruction(&self, _file_ids: &[MerkleHash]) -> Result<BatchQueryReconstructionResponse> {
             Ok(BatchQueryReconstructionResponse {
                 files: HashMap::new(),
@@ -561,6 +594,48 @@ mod tests {
         client.get_reconstruction(&key, None).await.unwrap();
 
         assert_eq!(inner_impl.call_count((key, None)), 2);
+    }
+
+    #[tokio::test]
+    async fn cache_evicts_lru_full_plan_on_overflow() {
+        let inner_impl = Arc::new(MockClient::new(MockMode::ReturnSome));
+        let inner: Arc<dyn Client> = inner_impl.clone();
+        let client = CachedXetClient::new(inner);
+
+        // Fill the cache with full plans, in order 0..N.
+        for i in 0..MAX_CACHE_ENTRIES {
+            client.get_reconstruction(&hash_for(i), None).await.unwrap();
+        }
+
+        // Bump entry 0 to make it the most-recently-accessed. Now entry 1
+        // should be the LRU victim.
+        client.get_reconstruction(&hash_for(0), None).await.unwrap();
+        assert_eq!(
+            inner_impl.call_count((hash_for(0), None)),
+            1,
+            "hit should not recall CAS"
+        );
+
+        // Overflow: triggers eviction of the LRU victim (entry 1).
+        let overflow = hash_for(MAX_CACHE_ENTRIES);
+        client.get_reconstruction(&overflow, None).await.unwrap();
+
+        // Entry 0 (recently touched) must survive.
+        client.get_reconstruction(&hash_for(0), None).await.unwrap();
+        assert_eq!(
+            inner_impl.call_count((hash_for(0), None)),
+            1,
+            "hot entry must survive LRU eviction"
+        );
+
+        // Entry 1 (least-recently-accessed) should have been evicted: another
+        // get re-fetches it from CAS.
+        client.get_reconstruction(&hash_for(1), None).await.unwrap();
+        assert_eq!(
+            inner_impl.call_count((hash_for(1), None)),
+            2,
+            "LRU victim must have been evicted"
+        );
     }
 
     #[tokio::test]

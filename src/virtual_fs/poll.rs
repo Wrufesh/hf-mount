@@ -3,12 +3,18 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use futures::stream::{self, StreamExt};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
+use crate::error::Error;
 use crate::hub_api::HubOps;
 
 use super::Invalidator;
 use super::inode::{self, InodeTable};
+
+/// Cap on the exponential-backoff multiplier applied to the poll interval
+/// when we keep getting 401s. With `interval = 30s` and `MAX_AUTH_BACKOFF_EXP = 6`,
+/// the max delay between polls becomes `30s * 2^6 = 32 min`.
+const MAX_AUTH_BACKOFF_EXP: u32 = 6;
 
 impl super::VirtualFs {
     /// Background task: polls Hub API tree listing to detect remote changes.
@@ -27,8 +33,36 @@ impl super::VirtualFs {
         interval: Duration,
         listing_concurrency: usize,
     ) {
+        // Exponent applied to `interval` when the Hub returns 401 (token expired
+        // or revoked). Reset to 0 as soon as we see a successful round.
+        let mut auth_backoff_exp: u32 = 0;
+        // None forces a full fan-out next round; primed with an initial probe so
+        // a freshly mounted source doesn't redundantly re-list once.
+        let mut last_revision: Option<String> = hub_client.probe_revision().await.ok();
         loop {
-            tokio::time::sleep(interval).await;
+            tokio::time::sleep(interval.saturating_mul(1u32 << auth_backoff_exp)).await;
+
+            match hub_client.probe_revision().await {
+                Ok(rev) => {
+                    if last_revision.as_ref() == Some(&rev) {
+                        debug!("Revision unchanged ({rev}); skipping tree fan-out");
+                        continue;
+                    }
+                    debug!("Revision changed to {rev}; running full poll");
+                    last_revision = Some(rev);
+                }
+                Err(e) => {
+                    if matches!(e, Error::Hub { status: Some(401), .. }) {
+                        auth_backoff_exp = (auth_backoff_exp + 1).min(MAX_AUTH_BACKOFF_EXP);
+                        warn!(
+                            "Revision probe saw 401 Unauthorized; backing off next poll to {:?}",
+                            interval.saturating_mul(1u32 << auth_backoff_exp)
+                        );
+                        continue;
+                    }
+                    warn!("Revision probe failed, falling back to full poll: {e}");
+                }
+            }
 
             // Only poll directories the user has actually visited (children_loaded).
             // This avoids fetching the entire tree for large repos where most
@@ -49,6 +83,7 @@ impl super::VirtualFs {
             let mut all_entries = Vec::new();
             let mut polled_prefixes = HashSet::new();
             let mut failed_prefixes = Vec::new();
+            let mut saw_auth_failure = false;
             for (prefix, result) in results {
                 match result {
                     Ok(entries) => {
@@ -56,10 +91,23 @@ impl super::VirtualFs {
                         all_entries.extend(entries);
                     }
                     Err(e) => {
+                        if matches!(e, Error::Hub { status: Some(401), .. }) {
+                            saw_auth_failure = true;
+                        }
                         warn!("Remote poll failed for prefix '{prefix}': {e}");
                         failed_prefixes.push(prefix);
                     }
                 }
+            }
+            if saw_auth_failure {
+                auth_backoff_exp = (auth_backoff_exp + 1).min(MAX_AUTH_BACKOFF_EXP);
+                warn!(
+                    "Remote poll saw 401 Unauthorized; backing off next poll to {:?}",
+                    interval.saturating_mul(1u32 << auth_backoff_exp)
+                );
+            } else if auth_backoff_exp > 0 {
+                info!("Remote poll auth recovered, resetting backoff");
+                auth_backoff_exp = 0;
             }
             // For failed prefixes, check if the parent was polled successfully
             // and the dir no longer appears in its listing. If so, the dir was
@@ -125,7 +173,7 @@ impl super::VirtualFs {
             if *is_dirty {
                 continue;
             }
-            match remote_map.get(path.as_str()) {
+            match remote_map.get(path.as_ref()) {
                 Some(remote) => {
                     let remote_hash = remote.xet_hash.as_deref();
                     let remote_oid = remote.oid.as_deref();
