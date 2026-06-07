@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -23,6 +23,18 @@ pub trait HubOps: Send + Sync {
     fn default_mtime(&self) -> SystemTime;
     fn source(&self) -> &SourceKind;
     fn is_repo(&self) -> bool;
+
+    /// Cheap probe returning an opaque "revision" token that changes whenever
+    /// the source content changes. For repos this is the commit head SHA; for
+    /// buckets it is `updatedAt`. The poll loop uses this to skip the full
+    /// tree-listing fan-out when nothing has changed.
+    ///
+    /// Errors fall through to a full fan-out — the probe is an optimization,
+    /// not a gate. The default impl errors out so mocks that don't care about
+    /// the probe path keep doing full polls.
+    async fn probe_revision(&self) -> Result<String> {
+        Err(Error::hub("probe_revision not implemented"))
+    }
 }
 
 // ── Repo / Bucket types ───────────────────────────────────────────────
@@ -362,13 +374,22 @@ async fn send_with_retry(
 
 fn make_clients(backend: &str) -> (Client, Client) {
     let user_agent = format!("hf-mount/{}; fs/{}", env!("CARGO_PKG_VERSION"), backend);
-    let client = Client::builder()
-        .user_agent(&user_agent)
+    // Idle pool / keep-alive shared across both clients so a hung Hub doesn't
+    // freeze the poll loop and TLS handshakes are amortized across rounds.
+    let base = || {
+        reqwest::Client::builder()
+            .user_agent(&user_agent)
+            .pool_idle_timeout(Duration::from_secs(90))
+            .tcp_keepalive(Some(Duration::from_secs(60)))
+            .connect_timeout(Duration::from_secs(10))
+    };
+    let client = base()
+        .timeout(Duration::from_secs(60))
         .build()
         .expect("failed to build client");
-    let head_client = Client::builder()
-        .user_agent(&user_agent)
+    let head_client = base()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
         .build()
         .expect("failed to build head_client");
     (client, head_client)
@@ -565,6 +586,36 @@ impl HubApiClient {
             )));
         }
         Ok(())
+    }
+
+    /// Cheap probe: fetch `/api/{type}/{id}` or `/api/buckets/{id}` and return
+    /// an opaque revision token. The poll loop calls this once per round and
+    /// skips the full tree fan-out when the token matches the previous one.
+    ///
+    /// Repos: prefer `sha` (commit head) — changes on every push and only on
+    /// pushes. Buckets: `updatedAt` — set by Hub on every bucket mutation.
+    /// Errors if the Hub response omits the expected field (should not happen
+    /// against the production Hub).
+    pub async fn probe_revision(&self) -> Result<String> {
+        let url = match &self.source {
+            SourceKind::Repo { repo_id, repo_type, .. } => {
+                format!("{}/api/{}/{}", self.endpoint, repo_type.api_prefix(), repo_id)
+            }
+            SourceKind::Bucket { bucket_id } => {
+                format!("{}/api/buckets/{}", self.endpoint, bucket_id)
+            }
+        };
+        let resp = send_with_retry(|| self.auth(self.client.get(&url)), "revision probe", false).await?;
+        let probe: RevisionProbe = resp.json().await?;
+        match &self.source {
+            SourceKind::Repo { .. } => probe
+                .sha
+                .or(probe.last_modified)
+                .ok_or_else(|| Error::hub("revision probe: repo response missing sha and lastModified")),
+            SourceKind::Bucket { .. } => probe
+                .updated_at
+                .ok_or_else(|| Error::hub("revision probe: bucket response missing updatedAt")),
+        }
     }
 
     /// List tree entries at the given prefix (single directory level).
@@ -880,10 +931,12 @@ impl HubApiClient {
             }
         };
 
-        // Read cached ETag if present.
+        // Read cached ETag only if dest exists — otherwise an orphan sidecar
+        // (e.g. user manually deleted dest) could trick us into a 304 and
+        // `return Ok(())` without dest actually being on disk.
         let etag_path = dest.with_extension("etag");
-        let cached_etag = if dest.exists() {
-            std::fs::read_to_string(&etag_path).ok()
+        let cached_etag = if tokio::fs::try_exists(dest).await.unwrap_or(false) {
+            tokio::fs::read_to_string(&etag_path).await.ok()
         } else {
             None
         };
@@ -918,7 +971,7 @@ impl HubApiClient {
 
         // Stream response body to a temp file, then atomic-rename to dest.
         if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
         let tmp = dest.with_extension(format!("tmp.{}", std::process::id()));
         let result: std::result::Result<(), Error> = async {
@@ -997,6 +1050,23 @@ impl HubOps for HubApiClient {
     fn is_repo(&self) -> bool {
         self.is_repo()
     }
+    async fn probe_revision(&self) -> Result<String> {
+        self.probe_revision().await
+    }
+}
+
+/// Fields read from `/api/{type}/{id}` for the cheap-probe path. For repos,
+/// `sha` is the commit head and changes on every push; `last_modified` is a
+/// fallback when `sha` is absent (older Hub responses). For buckets,
+/// `updated_at` is the only signal.
+#[derive(serde::Deserialize)]
+struct RevisionProbe {
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default, rename = "lastModified")]
+    last_modified: Option<String>,
+    #[serde(default, rename = "updatedAt")]
+    updated_at: Option<String>,
 }
 
 /// Parse `Link` header to extract the URL with `rel="next"`.

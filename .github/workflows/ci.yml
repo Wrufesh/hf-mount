@@ -23,7 +23,10 @@ jobs:
     runs-on:
       group: hf-mount-ci-pub
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Configure internal registries
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
 
       # Pin nightly so rustfmt rules don't drift between CI and contributor machines.
       # Bump together with the nightly used in `make fmt` / contributor setup.
@@ -32,11 +35,11 @@ jobs:
           toolchain: nightly-2026-04-22
           components: rustfmt
 
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system deps
         run: |
@@ -70,11 +73,14 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_ENDPOINT: https://huggingface.co
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Configure internal registries
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system deps
         run: |
@@ -99,9 +105,11 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Configure internal registries
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install system deps
         run: |
           sudo apt-get update
@@ -121,9 +129,11 @@ jobs:
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Configure internal registries
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install system deps
         run: |
           sudo apt-get update
@@ -144,11 +154,14 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_ENDPOINT: https://huggingface.co
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Configure internal registries
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system deps
         run: |
@@ -210,11 +223,14 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_ENDPOINT: https://huggingface.co
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: Configure internal registries
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install system deps
         run: |
