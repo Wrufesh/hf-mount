@@ -379,6 +379,7 @@ impl HubOps for AccHubClient {
             filename: String,
             created_at: String,
             file_size: Option<u64>,
+            merkle_hash: Option<String>,
         }
         #[derive(Deserialize)]
         struct NodeItemsResponse {
@@ -422,7 +423,7 @@ impl HubOps for AccHubClient {
                 path: relative_path,
                 entry_type: "file".to_string(),
                 size: obj.file_size,
-                xet_hash: None, // Resolved lazily via head_file
+                xet_hash: obj.merkle_hash,
                 oid: None,
                 mtime: Some(obj.created_at),
             });
