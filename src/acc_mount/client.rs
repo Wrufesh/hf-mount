@@ -647,6 +647,41 @@ impl HubOps for AccHubClient {
     }
 
     fn is_repo(&self) -> bool {
-        false
+        matches!(self.source_kind, SourceKind::Repo { .. })
+    }
+
+    async fn probe_revision(&self) -> Result<String> {
+        match &self.source_kind {
+            SourceKind::Bucket { .. } => {
+                let url = format!(
+                    "{}/api/v1/aterm-cli/{}/revision-probe/?source_kind=bucket",
+                    self.hub_endpoint, self.project_slug
+                );
+
+                let token_info = self.get_or_refresh_token().await?;
+                let mut req = self.client.get(&url);
+                if let Some(ref t) = token_info.raw_token {
+                    req = req.bearer_auth(t).header("x-authorization", t);
+                }
+
+                let resp = req.send().await.map_err(|e| Error::Xet(format!("Revision probe request failed: {e}")))?;
+                if !resp.status().is_success() {
+                    let status = resp.status();
+                    let text = resp.text().await.unwrap_or_default();
+                    return Err(Error::Xet(format!("Revision probe request failed ({}): {}", status, text)));
+                }
+
+                #[derive(Deserialize)]
+                struct ProbeResponse {
+                    revision: String,
+                }
+
+                let body: ProbeResponse = resp.json().await.map_err(|e| Error::Xet(format!("Failed to parse revision probe JSON: {e}")))?;
+                Ok(body.revision)
+            }
+            SourceKind::Repo { .. } => {
+                Err(Error::Xet("Revision probe is not implemented for Git repositories".to_string()))
+            }
+        }
     }
 }
