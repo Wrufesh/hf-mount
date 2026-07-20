@@ -411,15 +411,6 @@ pub fn build_with_runtime(
         standard_client.clone().expect("Standard client should be initialized")
     };
 
-    // Validate that the subfolder exists on the remote.
-    if !is_accelerator && !standard_client.as_ref().unwrap().path_prefix().is_empty() {
-        runtime.block_on(async {
-            standard_client.as_ref().unwrap().validate_path_prefix().await.unwrap_or_else(|e| {
-                panic!("{e}");
-            });
-        });
-    }
-
     if options.overlay && options.read_only {
         panic!(
             "--overlay with --read-only is pointless: overlay enables local writes, --read-only disables them. Use --read-only alone instead."
@@ -438,12 +429,14 @@ pub fn build_with_runtime(
     // mounts the folder is created by writing, so we skip the check entirely.
     // For read-only mounts a missing prefix just yields an empty mount, so we
     // warn instead of panicking the sidecar.
-    if read_only && !hub_client.path_prefix().is_empty() {
-        runtime.block_on(async {
-            if let Err(e) = hub_client.validate_path_prefix().await {
-                warn!("{e}");
-            }
-        });
+    if let Some(client) = &standard_client {
+        if read_only && !client.path_prefix().is_empty() {
+            runtime.block_on(async {
+                if let Err(e) = client.validate_path_prefix().await {
+                    warn!("{e}");
+                }
+            });
+        }
     }
 
     // Overlay: local writes allowed, but no remote write token/upload.
