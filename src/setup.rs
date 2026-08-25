@@ -396,7 +396,7 @@ pub fn build_with_runtime(
 
     let backend = if is_nfs { "nfs" } else { "fuse" };
     let is_accelerator = std::env::var("ACCELERATOR_MOUNT").is_ok();
-    let mut standard_client: Option<HubApiClient> = None;
+    let mut standard_client: Option<Arc<HubApiClient>> = None;
     let mut acc_client: Option<Arc<crate::acc_mount::AccHubClient>> = None;
 
     let hub_ops_client: Arc<dyn HubOps> = if !is_accelerator {
@@ -413,7 +413,7 @@ pub fn build_with_runtime(
             .unwrap_or_else(|e| panic!("Failed to initialize Hub client: {e}"))
         });
         standard_client = Some(client.clone());
-        Arc::new(client)
+        client
     } else {
         let client = Arc::new(runtime.block_on(async {
             crate::acc_mount::AccHubClient::new(

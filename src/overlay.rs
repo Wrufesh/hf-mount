@@ -77,6 +77,7 @@ impl OverlayBacking {
 
     pub fn create_dir(&self, full_path: &str, mode: u16) -> std::io::Result<()> {
         let rel = validate_rel_path(full_path)?;
+        #[allow(unused_mut)]
         let mut builder = DirBuilder::new();
         #[cfg(unix)]
         builder.mode(mode as u32);
