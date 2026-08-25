@@ -23,13 +23,12 @@ env:
 jobs:
   lint-test:
     name: Lint & Unit Tests
-    runs-on:
-      group: hf-mount-ci-pub
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Configure internal registries
-        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash || true
 
       # Pin nightly so rustfmt rules don't drift between CI and contributor machines.
       # Bump together with the nightly used in `make fmt` / contributor setup.
@@ -69,8 +68,7 @@ jobs:
 
   smoke-test:
     name: Smoke Tests (FUSE + NFS)
-    runs-on:
-      group: hf-mount-ci-pub
+    runs-on: ubuntu-22.04
     needs: lint-test
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -79,7 +77,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Configure internal registries
-        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash || true
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
@@ -132,15 +130,14 @@ jobs:
 
   fsx:
     name: fsx (data integrity)
-    runs-on:
-      group: hf-mount-ci-pub
+    runs-on: ubuntu-22.04
     needs: lint-test
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Configure internal registries
-        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash || true
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install system deps
@@ -156,15 +153,14 @@ jobs:
 
   xfstests:
     name: xfstests (filesystem exerciser)
-    runs-on:
-      group: hf-mount-ci-pub-m5dn-24xlarge
+    runs-on: ubuntu-22.04
     needs: lint-test
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Configure internal registries
-        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash || true
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Install system deps
@@ -180,8 +176,7 @@ jobs:
 
   pjdfstest:
     name: POSIX Compliance (pjdfstest)
-    runs-on:
-      group: hf-mount-ci-pub
+    runs-on: ubuntu-22.04
     needs: lint-test
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -190,7 +185,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Configure internal registries
-        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash || true
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
@@ -251,8 +246,7 @@ jobs:
 
   bench:
     name: Benchmarks
-    runs-on:
-      group: hf-mount-ci-pub
+    runs-on: ubuntu-22.04
     needs: lint-test
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -261,7 +255,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Configure internal registries
-        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash
+        run: curl -sSL https://registries.huggingface.tech/setup.sh | bash || true
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
 
