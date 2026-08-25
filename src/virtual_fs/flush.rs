@@ -451,6 +451,10 @@ async fn flush_batch(
             file_info.hash(),
             file_info.file_size().expect("upload returned XetFileInfo without size")
         );
+        let file_size = file_info.file_size().expect("upload returned XetFileInfo without size");
+        if std::env::var("ACCELERATOR_MOUNT").is_ok() {
+            crate::acc_mount::client::record_uploaded_info(file_info.hash().to_string(), file_size, None);
+        }
         ops.push(BatchOp::AddFile {
             path: item.full_path.clone(),
             xet_hash: file_info.hash().to_string(),
