@@ -11,7 +11,7 @@ use xet_runtime::core::XetContext;
 
 use crate::cached_xet_client::CachedXetClient;
 use crate::file_cache::FileCache;
-use crate::hub_api::{HubApiClient, HubTokenRefresher, SourceKind, parse_repo_id, split_path_prefix};
+use crate::hub_api::{HubApiClient, HubOps, HubTokenRefresher, SourceKind, parse_repo_id, split_path_prefix};
 use crate::overlay::OverlayBacking;
 use crate::virtual_fs::{VfsConfig, VirtualFs};
 use crate::xet::{StagingDir, XetSessions};

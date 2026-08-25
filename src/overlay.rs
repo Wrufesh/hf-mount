@@ -1,9 +1,9 @@
 use std::path::Path;
 use std::time::SystemTime;
 
-use cap_std::fs::{Dir, DirBuilder, OpenOptions, Permissions};
+use cap_std::fs::{Dir, DirBuilder, OpenOptions};
 #[cfg(unix)]
-use cap_std::fs::{DirBuilderExt, PermissionsExt};
+use cap_std::fs::{DirBuilderExt, Permissions, PermissionsExt};
 
 #[derive(Debug, Clone)]
 pub struct OverlayDirEntry {
