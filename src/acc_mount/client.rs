@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use std::sync::{Arc, OnceLock, Mutex};
-use std::collections::HashMap;
+use std::sync::Arc;
+
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
@@ -11,28 +11,6 @@ use xet_client::cas_client::auth::{TokenRefresher, TokenInfo, AuthError};
 
 use crate::error::{Result, Error};
 use crate::hub_api::{HubOps, TreeEntry, HeadFileInfo, BatchOp, SourceKind};
-
-#[derive(Clone, Debug)]
-pub struct UploadedFileInfo {
-    pub size: u64,
-    pub sha256: Option<String>,
-}
-
-pub static UPLOADED_FILE_INFOS: OnceLock<Mutex<HashMap<String, UploadedFileInfo>>> = OnceLock::new();
-
-pub fn record_uploaded_info(hash: String, size: u64, sha256: Option<String>) {
-    UPLOADED_FILE_INFOS
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .insert(hash, UploadedFileInfo { size, sha256 });
-}
-
-pub fn get_uploaded_info(hash: &str) -> Option<UploadedFileInfo> {
-    UPLOADED_FILE_INFOS
-        .get()
-        .and_then(|m| m.lock().unwrap().get(hash).cloned())
-}
 
 #[derive(Clone, Debug)]
 pub struct TokenState {
@@ -490,8 +468,6 @@ impl HubOps for AccHubClient {
         struct XetObjectRegistrationItem {
             filename: String,
             merkle_hash: String,
-            sha256: String,
-            file_size: u64,
             content_type: Option<String>,
         }
 
@@ -511,17 +487,6 @@ impl HubOps for AccHubClient {
         for op in ops {
             match op {
                 BatchOp::AddFile { path, xet_hash, content_type, .. } => {
-                    let cached_info = get_uploaded_info(xet_hash).ok_or_else(|| {
-                        Error::Xet(format!(
-                            "Cache miss for xet_hash={}. Size and SHA256 must be cached before registration.",
-                            xet_hash
-                        ))
-                    })?;
-
-                    let file_size = cached_info.size;
-                    let sha256_val = cached_info.sha256.clone().unwrap_or_else(|| xet_hash.clone());
-                    tracing::debug!("Resolved size from cache for xet_hash={}: {} bytes, sha256={}", xet_hash, file_size, sha256_val);
-
                     let absolute_filename = if path.starts_with('/') {
                         format!("{}{}", self.project_slug, path)
                     } else {
@@ -531,8 +496,6 @@ impl HubOps for AccHubClient {
                     items.push(XetObjectRegistrationItem {
                         filename: absolute_filename,
                         merkle_hash: xet_hash.clone(),
-                        sha256: sha256_val,
-                        file_size: file_size,
                         content_type: content_type.clone(),
                     });
                 }
