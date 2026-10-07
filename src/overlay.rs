@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use cap_std::fs::MetadataExt;
 use std::time::SystemTime;
 
 use cap_std::fs::{Dir, DirBuilder, OpenOptions, Permissions};
@@ -27,6 +28,31 @@ impl OverlayBacking {
         Self {
             dir: Dir::from_std_file(fd),
         }
+    }
+
+    // IIASA ACCELERATOR PLATFORM USECASE: Helper method for virtual file
+    pub fn list_all_files(&self) -> std::io::Result<String> {
+        let mut results = Vec::new();
+        let mut dirs = vec![PathBuf::from(".")];
+        while let Some(d) = dirs.pop() {
+            if let Ok(entries) = self.dir.read_dir(&d) {
+                for entry in entries.flatten() {
+                    let mut path = d.clone();
+                    path.push(entry.file_name());
+                    if let Ok(meta) = entry.metadata() {
+                        if meta.is_dir() {
+                            dirs.push(path);
+                        } else if meta.is_file() {
+                            if let Some(s) = path.strip_prefix(".").unwrap_or(&path).to_str() {
+                                let gid = meta.gid();
+                                results.push(format!("{}:{}", s, gid));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(results.join("\n"))
     }
 
     pub fn exists(&self, full_path: &str) -> std::io::Result<bool> {
@@ -207,6 +233,21 @@ mod tests {
     use std::os::fd::AsRawFd;
     use std::time::UNIX_EPOCH;
 
+    #[test]
+    fn test_list_all_files() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("a.txt"), "hello").unwrap();
+        std::fs::create_dir(temp.path().join("sub")).unwrap();
+        std::fs::write(temp.path().join("sub/b.txt"), "world").unwrap();
+        
+        let fd = std::fs::File::open(temp.path()).unwrap();
+        let overlay = OverlayBacking::new(fd);
+        
+        let out = overlay.list_all_files().unwrap();
+        assert!(out.contains("a.txt:"));
+        assert!(out.contains("sub/b.txt:"));
+    }
+
     fn fresh_temp_dir(name: &str) -> std::path::PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -283,3 +324,4 @@ mod tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 }
+
