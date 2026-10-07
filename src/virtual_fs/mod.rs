@@ -1236,8 +1236,30 @@ impl VirtualFs {
 
     // ── VFS operations ─────────────────────────────────────────────────
 
+    // IIASA ACCELERATOR PLATFORM USECASE: Expose overlay backing to fuse
+    pub fn get_overlay_backing(&self) -> Option<&Arc<OverlayBacking>> {
+        self.overlay_backing.as_ref()
+    }
+
     pub async fn lookup(&self, parent: u64, name: &str) -> VirtualFsResult<VirtualFsAttr> {
         debug!("lookup: parent={}, name={}", parent, name);
+
+        // [NEW] IIASA ACCELERATOR PLATFORM USECASE: Virtual file intercept for overlay writes
+        if parent == 1 && name == ".hf_overlay_writes" && self.overlay_backing.is_some() && std::env::var("ACCELERATOR_MOUNT").is_ok() {
+            return Ok(VirtualFsAttr {
+                ino: u64::MAX - 1,
+                size: 4096,
+                blocks: 8,
+                atime: UNIX_EPOCH,
+                mtime: UNIX_EPOCH,
+                ctime: UNIX_EPOCH,
+                kind: InodeKind::File,
+                perm: 0o444, // Read-only
+                nlink: 1,
+                uid: self.uid,
+                gid: self.gid,
+            });
+        }
 
         // Fast path: children already loaded → lookup directly, no allocation needed.
         // Revalidation info extracted from the lock scope so we can await outside it.
