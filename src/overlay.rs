@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use cap_std::fs::MetadataExt;
 use std::time::SystemTime;
 
@@ -42,7 +43,10 @@ impl OverlayBacking {
                             dirs.push(path);
                         } else if meta.is_file() {
                             if let Some(s) = path.strip_prefix(".").unwrap_or(&path).to_str() {
+                                #[cfg(unix)]
                                 let gid = meta.gid();
+                                #[cfg(not(unix))]
+                                let gid = 0;
                                 results.push(format!("{}:{}", s, gid));
                             }
                         }
