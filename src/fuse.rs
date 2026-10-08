@@ -234,7 +234,7 @@ impl Filesystem for FuseAdapter {
     fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         // [NEW] IIASA ACCELERATOR PLATFORM USECASE: Intercept open for the virtual file
         if ino.0 == u64::MAX - 1 {
-            reply.opened(FileHandle(u64::MAX - 1), FopenFlags::DIRECT_IO);
+            reply.opened(FileHandle(u64::MAX - 1), FopenFlags::FOPEN_DIRECT_IO);
             return;
         }
 
