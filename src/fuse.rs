@@ -281,8 +281,12 @@ impl Filesystem for FuseAdapter {
                 let list = overlay.list_all_files().unwrap_or_default();
                 let bytes = list.as_bytes();
                 let start = offset as usize;
-                let end = std::cmp::min(start + size as usize, bytes.len());
-                reply.data(&bytes[start..end]);
+                if start >= bytes.len() {
+                    reply.data(b"");
+                } else {
+                    let end = std::cmp::min(start + size as usize, bytes.len());
+                    reply.data(&bytes[start..end]);
+                }
             } else {
                 reply.data(b"");
             }

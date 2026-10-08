@@ -1279,8 +1279,8 @@ impl VirtualFs {
         if parent == 1 && name == ".hf_overlay_writes" && self.overlay_backing.is_some() && std::env::var("ACCELERATOR_MOUNT").is_ok() {
             return Ok(VirtualFsAttr {
                 ino: u64::MAX - 1,
-                size: 4096,
-                blocks: 8,
+                size: 1024 * 1024 * 1024,
+                blocks: 2097152,
                 atime: UNIX_EPOCH,
                 mtime: UNIX_EPOCH,
                 ctime: UNIX_EPOCH,
@@ -1632,6 +1632,23 @@ impl VirtualFs {
 
     pub fn getattr(&self, ino: u64) -> VirtualFsResult<VirtualFsAttr> {
         debug!("getattr: ino={}", ino);
+
+        // [NEW] IIASA ACCELERATOR PLATFORM USECASE
+        if ino == u64::MAX - 1 && self.overlay_backing.is_some() && std::env::var("ACCELERATOR_MOUNT").is_ok() {
+            return Ok(VirtualFsAttr {
+                ino: u64::MAX - 1,
+                size: 1024 * 1024 * 1024,
+                blocks: 2097152,
+                atime: UNIX_EPOCH,
+                mtime: UNIX_EPOCH,
+                ctime: UNIX_EPOCH,
+                kind: InodeKind::File,
+                perm: 0o444,
+                nlink: 1,
+                uid: self.uid,
+                gid: self.gid,
+            });
+        }
 
         let inodes = self.inode_table.read().expect("inodes poisoned");
         match inodes.get(ino) {
