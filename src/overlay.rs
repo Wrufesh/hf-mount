@@ -15,6 +15,8 @@ pub struct OverlayDirEntry {
     pub size: u64,
     pub mtime: SystemTime,
     pub mode: u16,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
 }
 
 /// Overlay-local writable backing. All paths resolve within the directory fd;
@@ -181,6 +183,8 @@ impl OverlayBacking {
                     size: 0,
                     mtime: SystemTime::UNIX_EPOCH,
                     mode: 0,
+                    uid: None,
+                    gid: None,
                 });
                 continue;
             }
@@ -207,6 +211,17 @@ impl OverlayBacking {
                 size: meta.len(),
                 mtime: meta.modified().map(|t| t.into_std()).unwrap_or(SystemTime::UNIX_EPOCH),
                 mode,
+                // [NEW] IIASA ACCELERATOR PLATFORM USECASE
+                // Extract true physical uid/gid so multiple processes sharing the overlay
+                // retain their ownership correctly instead of taking the mount default.
+                #[cfg(unix)]
+                uid: Some(meta.uid()),
+                #[cfg(not(unix))]
+                uid: None,
+                #[cfg(unix)]
+                gid: Some(meta.gid()),
+                #[cfg(not(unix))]
+                gid: None,
             });
         }
         Ok(out)
