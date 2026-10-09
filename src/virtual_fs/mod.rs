@@ -452,8 +452,8 @@ impl VirtualFs {
                 // [NEW] IIASA ACCELERATOR PLATFORM USECASE
                 // Overlay files explicitly retain the original creator's UID/GID
                 // to support multiple processes writing with different GIDs.
-                entry.uid.unwrap_or(self.uid),
-                entry.gid.unwrap_or(self.gid),
+                entry.uid.filter(|&id| id != 0).unwrap_or(self.uid),
+                entry.gid.filter(|&id| id != 0).unwrap_or(self.gid),
             );
             // Local overrides remote: clear remote identity, mark dirty.
             if let Some(e) = inodes.get_mut(ino) {
